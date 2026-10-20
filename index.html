@@ -263,9 +263,13 @@ function plan(counts, extraTo) {
 }
 
 // Turn bins into chart rows. Mixed batches first.
+// R goes to the size with the most dough in the batch, so the small amounts stay exact counts.
 function finish(bins) {
   return bins.map(function (b) {
-    var r = b.order[b.order.length - 1], rS = BY[r], cells = {};
+    var r = b.order.reduce(function (big, k) {
+      return b.balls[k] * BY[k].ball >= b.balls[big] * BY[big].ball ? k : big;
+    });
+    var rS = BY[r], cells = {};
     var rest = CAP - b.used + b.balls[r] * rS.ball;
     b.order.forEach(function (k) {
       var s = BY[k], n = b.balls[k];
