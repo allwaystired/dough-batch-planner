@@ -14,9 +14,10 @@ Enter the trays needed for each size and it splits them into batches. Each batch
 
 ## How it plans
 
-1. Uses the fewest batches possible, and never makes fewer trays than you asked for.
+1. Uses the fewest batches possible.
 2. Keeps as many batches single-size as it can.
-3. Shares the leftover dough across sizes ("Spread"), or puts it all into the size you pick.
+3. If an order is just over a batch line, saves a whole batch by letting one or two sizes come up a few dough balls short (always less than a tray). Tap the tip to use the extra batch instead.
+4. Shares the leftover dough across sizes ("Spread"), or puts it all into the size you pick.
 
 ## Reading the chart
 

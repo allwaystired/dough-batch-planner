@@ -106,6 +106,8 @@ tr.done .check { background: var(--accent); border-color: var(--accent); color: 
 tr.total td { background: var(--soft); }
 tr.total .b { font: 700 0.95rem var(--display); }
 td .s.plus { color: var(--accent); font-weight: 600; }
+td .s.short { color: var(--warn); font-weight: 600; }
+.tiplink { font-weight: 700; text-decoration: underline; text-underline-offset: 2px; color: inherit; }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
 .legend { margin: 0; font-size: 0.85rem; color: var(--muted); }
 .legend b { font: 700 1.05rem var(--display); color: var(--accent); }
@@ -281,23 +283,40 @@ function finish(bins) {
   }).sort(function (a, b) { return b.mixed - a.mixed; });
 }
 
-// When you're right at a batch line, the fewest trays to drop to save a batch.
-function saveTip(counts, extraTo, B) {
-  if (B < 2) return null;
-  var over = ozOf(counts) - (B - 1) * CAP;
-  if (over > 2 * BY.L.tray) return null;
-  var best = null;
-  KEYS.forEach(function (k) {
-    for (var n = 1; n <= Math.min(counts[k], 4); n++) {
-      var c = Object.assign({}, counts);
-      c[k] -= n;
-      if (plan(c, extraTo).length < B) {
-        if (!best || n * BY[k].tray < best.oz) best = { k: k, n: n, oz: n * BY[k].tray };
-        break;
-      }
-    }
+// Dough balls each size actually gets from a plan.
+function ballsMade(batches) {
+  var m = {};
+  batches.forEach(function (b) {
+    for (var k in b.cells) m[k] = (m[k] || 0) + Math.round(b.cells[k].makes * BY[k].per);
   });
-  return best && { over: over, B: B, k: best.k, n: best.n };
+  return m;
+}
+
+// When an order is just over a batch line: the plan with one fewer batch
+// where no size comes up a full tray short. Tries trimming one tray from
+// any mix of sizes and keeps the plan that's shortest by the least dough.
+function leanPlan(counts, extraTo, B) {
+  if (B < 2) return null;
+  var keys = KEYS.filter(function (k) { return counts[k] > 0; });
+  var best = null;
+  for (var mask = 1; mask < (1 << keys.length); mask++) {
+    var c = Object.assign({}, counts);
+    keys.forEach(function (k, i) { if (mask & (1 << i)) c[k]--; });
+    var p = plan(c, extraTo);
+    if (p.length >= B) continue;
+    var made = ballsMade(p), short = {}, oz = 0, ok = true;
+    keys.forEach(function (k) {
+      var miss = counts[k] * BY[k].per - (made[k] || 0);
+      if (miss <= 0) return;
+      if (miss >= BY[k].per) ok = false;
+      short[k] = miss;
+      oz += miss * BY[k].ball;
+    });
+    if (!ok) continue;
+    var mixed = p.filter(function (b) { return b.mixed; }).length;
+    if (!best || cmp([oz, mixed], [best.oz, best.mixed]) < 0) best = { batches: p, short: short, oz: oz, mixed: mixed };
+  }
+  return best;
 }
 
 // ===== Page =====
@@ -310,10 +329,10 @@ function saveTip(counts, extraTo, B) {
   var counts = store.get("counts", { P: 2, S: 3, M: 4, L: 10, XL: 3 });
   var extraTo = store.get("extraTo", "spread");
   if (extraTo !== "spread" && !BY[extraTo]) extraTo = "spread";
+  var coverAll = store.get("coverAll", false);
   var done = {}, planKey = "";
 
   var trim = function (n) { return String(Math.round(n * 10) / 10); };
-  var plural = function (n, word) { return n + " " + word + (n === 1 ? "" : "es"); };
 
   // Build inputs
   $("inputs").innerHTML = SIZES.map(function (s) {
@@ -346,8 +365,12 @@ function saveTip(counts, extraTo, B) {
       ? "Leftover dough is shared across sizes by how much of each you need."
       : "Leftover dough goes to " + extraTo + " wherever possible.";
 
-    var batches = plan(counts, extraTo);
-    var key = JSON.stringify([counts, extraTo]);
+    store.set("coverAll", coverAll);
+    var full = plan(counts, extraTo);
+    var lean = leanPlan(counts, extraTo, full.length);
+    var useLean = !!lean && !coverAll;
+    var batches = useLean ? lean.batches : full;
+    var key = JSON.stringify([counts, extraTo, useLean]);
     if (key !== planKey) { done = {}; planKey = key; }
 
     var mixed = batches.filter(function (b) { return b.mixed; }).length;
@@ -355,13 +378,16 @@ function saveTip(counts, extraTo, B) {
       ? '<b>' + batches.length + '</b> batches · <b>' + mixed + '</b> mixed · <b>' + (batches.length * CAP).toLocaleString("en-US") + '</b> oz'
       : "";
 
-    var tip = saveTip(counts, extraTo, batches.length);
-    $("tip").hidden = !tip;
-    if (tip) {
-      var lead = tip.over > 0
-        ? "You're only <b>" + tip.over + " oz</b> over " + plural(tip.B - 1, "batch")
-        : "This fits " + plural(tip.B - 1, "batch") + " with only <b>" + -tip.over + " oz</b> to spare, too tight to cut cleanly";
-      $("tip").innerHTML = lead + ". Drop <b>" + tip.n + " " + tip.k + " tray" + (tip.n === 1 ? "" : "s") + "</b> to save a whole batch.";
+    $("tip").hidden = !lean;
+    if (lean) {
+      var shortText = Object.keys(lean.short).map(function (k) {
+        return "<b>" + k + " " + lean.short[k] + " ball" + (lean.short[k] === 1 ? "" : "s") + "</b>";
+      }).join(" and ");
+      $("tip").innerHTML = useLean
+        ? "Saved a whole batch. " + shortText + " short, under a tray. " +
+          '<button type="button" class="tiplink" id="cover">Use ' + full.length + ' batches instead</button>'
+        : "You can save a whole batch if " + shortText + " short. " +
+          '<button type="button" class="tiplink" id="cover">Save a batch</button>';
     }
 
     if (!batches.length) {
@@ -369,13 +395,11 @@ function saveTip(counts, extraTo, B) {
       return;
     }
 
-    var made = {};
     var dash = '<td class="none"><span class="n">–</span></td>';
     var rows = batches.map(function (b, i) {
       var cells = SIZES.map(function (s) {
         var c = b.cells[s.k];
         if (!c) return dash;
-        made[s.k] = (made[s.k] || 0) + c.makes;
         if (c.kind === "N") {
           return '<td><span class="n">' + c.trays + '</span>' + (c.balls ? '<span class="s">+' + c.balls + ' balls</span>' : '') + '</td>';
         }
@@ -387,11 +411,14 @@ function saveTip(counts, extraTo, B) {
         '</button></td>' + cells + '</tr>';
     }).join("");
 
+    var balls = ballsMade(batches);
     var total = SIZES.map(function (s) {
-      var m = Math.floor((made[s.k] || 0) * s.per) / s.per, extra = m - counts[s.k];
-      if (!counts[s.k] && !m) return dash;
-      return '<td><span class="n">' + counts[s.k] + '</span>' +
-        (extra > 0.05 ? '<span class="s plus">+' + trim(extra) + ' extra</span>' : '<span class="s">exact</span>') + '</td>';
+      var diff = (balls[s.k] || 0) - counts[s.k] * s.per;
+      if (!counts[s.k] && !balls[s.k]) return dash;
+      var note = diff < 0 ? '<span class="s short">−' + -diff + ' ball' + (diff === -1 ? '' : 's') + '</span>'
+        : diff >= s.per / 10 ? '<span class="s plus">+' + trim(diff / s.per) + ' extra</span>'
+        : '<span class="s">exact</span>';
+      return '<td><span class="n">' + counts[s.k] + '</span>' + note + '</td>';
     }).join("");
 
     $("chart").innerHTML = '<table><thead><tr><th class="b">Batch</th>' +
@@ -419,6 +446,9 @@ function saveTip(counts, extraTo, B) {
   $("chart").addEventListener("click", function (e) {
     var b = e.target.closest("button[data-row]");
     if (b) { done[b.dataset.row] = !done[b.dataset.row]; render(); }
+  });
+  $("tip").addEventListener("click", function (e) {
+    if (e.target.id === "cover") { coverAll = !coverAll; render(); }
   });
   $("clear").addEventListener("click", function () {
     KEYS.forEach(function (k) { counts[k] = 0; $("in-" + k).value = ""; });
